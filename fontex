@@ -1,0 +1,128 @@
+#!/usr/bin/env ruby
+#
+# fontex - font extractor
+#
+# Fontex will, given a URL or file, extract embedded CSS fonts and write them to files
+# in the current directory.
+#
+# Usage: $ fontex file.css
+#    or: $ fontex http://example.com/fonts.css [html-headers]
+#    or: $ fontex http://example.com [html-headers]
+#   
+#    in the latter case, all CSS stylesheets linked from the HTML will also be parsed.
+#
+#    Additional html-headers can be given in the form name=value, for example to specify required
+#    cookies or referer that may be needed to get the remote server to deliver the required content.
+#
+# Or use as a Ruby API:
+#
+#        require 'fontex'
+#        decode(dir,args)
+#
+#     will decode fonts specified by the args array and write them to `dir`
+#
+# JL 20140628 (c) John Lane 2014, MIT License http://opensource.org/licenses/MIT
+
+require 'base64'
+require 'open-uri'
+require 'cgi'
+
+# Optional dependency that is only needed if http->https redirections support is required.
+# (https://bugs.ruby-lang.org/issues/3719 and https://bugs.ruby-lang.org/issues/859)
+require 'open_uri_redirections' # gem install open_uri_redirectionso
+
+#Pick your poison (or none at all!)
+#USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_3) AppleWebKit/537.36     (KHTML, like Gecko) Chrome/29.0.1547.57 Safari/537.36'
+USER_AGENT='Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/30.0'
+
+#map mime-types to file extensions
+FORMATS = { 'opentype' => 'otf' }
+
+#valid base64 characters, for validation http://www.faqs.org/rfcs/rfc4648.html
+BASE64='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='.split('')
+
+# file or url
+def get(args)
+  src = args.shift.gsub('|', '%7C')
+
+  if src.start_with? 'http'
+    headers = args.each_with_object({}) { |v,h| k,v = v.split('='); h.merge!({ k => v}) }
+    headers.merge!({ 'User-Agent' => USER_AGENT }) if defined? USER_AGENT
+    headers.merge!({allow_redirections: :safe}) if OpenURI.methods.include?(:redirectable_safe?)
+
+    begin
+      content = open(src, headers).read
+
+      # recurse <link rel='stylesheet'> stanzas in html
+      content.gsub /<link\s+(.*?)\s?+rel=['"]stylesheet['"](.*?)\/?>/ do
+        html = $~.captures.join
+        href = html[/href=['"](.*?)['"]/,1]
+        type = html[/type=['"](.*?)['"]/,1]
+        content+= get(args.unshift(href)) if type.nil? or type == 'text/css'
+      end
+    rescue RuntimeError => e
+      if e.to_s.start_with? 'redirection forbidden'
+        puts %Q{#{e}\nEdit the source and uncomment "require 'open_uri_redirections'".}
+        exit
+      else
+        raise e
+      end
+    end
+  else
+    content = File.read(src)
+  end
+  content.gsub(/\s+/,' ')
+end
+
+def decode(path,args)
+  fonts=[]
+  if File.directory? path
+    # http://rubular.com/r/YbbRv9wEU4
+    #get(args).gsub! /.*?@font-face{(.*?)src:\s?url\((.*?);base64,([^)]*)\)\s*(.*?)}/m do
+
+    #http://rubular.com/r/JBnlQLFj3d
+    get(args).gsub! /.*?@font-face\s*{(.*?)src:.*?url\(["']?(.*?);base64,([^'"]*)["']?\)\s*(.*?)}/m do
+      css = ($1+$4).strip
+      mime = $2
+      base64=$3
+      family = css[/font-family:\s*?['"]?([\s\w-]+?)['"]?;/,1].gsub(/\s+/,'_').downcase
+      format = css[/format\(['"](\w+)['"]\)/,1]
+      format = mime[/.*\/((x-font-)?(.*))/,3] if format.nil? #http://rubular.com/r/yhrpgYkWhd
+      format = FORMATS[format] if FORMATS.has_key? format
+      weight = css[/font-weight:\s*(\w+?)\b/,1]
+      style = css[/font-style:\s*(\w+?)\b/,1]
+
+      name = "#{path}/"
+      name += family unless family.nil?
+      name += "-#{weight}" unless weight.nil? or %w(normal).include?(weight)
+      name += "-#{style}" unless style.nil? or %w(normal).include?(style)
+      name += ".#{format}" unless format.nil?
+
+      # http://stackoverflow.com/questions/475074/regex-to-parse-or-validate-base64-data
+      unless base64 =~ /^(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=|[A-Za-z0-9+\/]{4})$/
+        if base64.chars.uniq - BASE64 == %w{%} # if the only non-base64 character is a '%' then it's
+          base64 = CGI.unescape base64         # percent-esccaped, so un-escape it before decoding.
+        else
+          puts "Font encoding is not base64: #{css}"
+          next
+        end
+      end
+      begin
+        data = Base64.strict_decode64(base64)
+        File.open(name,'w') { |f| f.write(data) }
+        fonts << name
+      rescue
+        puts "Decode failed! '#{base64[0,10]}...#{base64[-10,10]}"
+      end
+    end
+  else
+    puts "#{path} is not a directory"
+  end
+  return fonts
+end
+
+# Only run the below when executed from command-line (not via 'require' or 'load'
+if __FILE__==$0
+  raise "please provide url or path, e.g http://www.basecamp.com" unless ARGV[0]
+  puts decode('.',ARGV)
+end

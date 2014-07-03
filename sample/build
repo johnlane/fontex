@@ -1,0 +1,183 @@
+#!/bin/bash
+#
+# Build the sample Fontex site
+#
+# JL 20140701
+
+main() {
+
+  # Specify working paths, either absolute or relative to `pwd` when launching script
+  SITE=site          # directory where website will be built
+  CSS=../spec/css    # directory containing CSS files to extract fonts from
+  FONTEX=../fontex   # path to the fontex executable
+  HEADER=header.html # file containing header html that is written to the top of index.html.
+  SAMPLE=sample.html # file containing long sample text that is written to the font sample html.
+
+  # Icon assets
+  ICON_RIGHT=right.svg    # file to use as icon to "go right" into the long sample
+  ICON_HOME=home.svg      # file to use as icon to "go home" back to the index.
+  ICON_W3C=html5-logo.png # file to use as icon for W3C valid HTML check
+
+  DATE='%A %d %B, %Y at %R %Z.' # date format displayed on page stamps.
+
+  # string of symbols displayed on font sample, adjusted for HTML5 validity
+  for c in {33..47} {58..64} {91..96} {123..126}; do SYMBOLS+=$(printf "\x$(printf %x $c)"); done
+  SYMBOLS="${SYMBOLS/&/&amp;}" # for valid HTML5
+  SYMBOLS="${SYMBOLS/</&lt;}"  # for valid HTML5
+
+  # make directories and copy files
+  rm -rf "${SITE}"
+  mkdir -p "${SITE}"/assets/{fonts,icons}
+  cp "${ICON_RIGHT}" "${ICON_HOME}" "${ICON_W3C}" "${SITE}/assets/icons"
+  
+  # make working paths absolute
+  for p in CSS FONTEX SITE HEADER SAMPLE
+  do
+    eval "${p}"=$(realpath "${!p}")
+  done
+
+  # extract fonts
+  pushd "${SITE}/assets/fonts"
+  for css in $(find "${CSS}" -type f)
+  do
+    "${FONTEX}" "${css}"
+  done
+  popd
+
+  # set ROOT to the web-root that the site will be built for, or leave unset for '/'
+  # ROOT="${SITE}" # uncomment to generate site for local browsing (e.g file://path/to/site)
+  # ROOT='/fontex'   # for uploading to /fontex directory on web server
+
+  # make absolute icon paths based on the web-root
+  for p in ICON_RIGHT ICON_HOME ICON_W3C
+  do
+    eval "${p}"=${ROOT}/assets/icons/"$(basename ${!p})"
+  done
+
+  HEADER=$(cat "${HEADER}")
+  index=''
+  css='.sample { border:2px solid; border-radius:10px; padding:5px; margin:5px; box-shadow: 10px 10px 5px #888888; }\n'
+  css+='.twocol { -webkit-column-count:2; -moz-column-count:2; column-count:2 }\n'
+  css+='h1.title {background-color:#FCC; color:#300; border-bottom: 2px solid; margin:-5px; border-top-left-radius:10px; border-top-right-radius:10px}\n'
+
+  for file in $(find "${SITE}/assets/fonts" -type f)
+  do
+
+    file=$(basename "$file")
+    type="${file##*.}"
+    font="${file%.*}"
+
+    [[ "${font}" =~ -bold[-.] ]] && bold='font-weight:bold;' || bold=''
+    [[ "${font}" =~ -italic[-.] ]] && italic='font-style:italic;' || italic=''
+    sample_css="@font-face{font-family:'${font}';${bold}${italic}src:url(${ROOT}/assets/fonts/${file})}\n"
+    samples_css+="${sample_css}"
+
+    write_sample index "${font}" "${css}${sample_css}"
+  done
+
+  write_file "${SITE}/index.html" "${HEADER}\n<div class='twocol'>\n${index}\n</div>\n" "Fontex samples" "${css}${samples_css}"
+
+  echo "Site generated in '${SITE}'."
+  echo "Copy this directory-tree to '${ROOT:-/}' on a web server."
+  echo "To run a test server at 'http://localhost:8000', either:"
+  echo "   (Ruby)    : $ ruby -run -e httpd '${SITE}' -p 8000"
+  echo " (Python v2) : $ (cd '${SITE}' && python2 -m SimpleHTTPServer)"
+  echo " (Python v3) : $ (cd '${SITE}' && python3 -m http.server)"
+}
+
+write_file() {
+  local name="${1}"
+  local body="${2}"
+  local title="${3}"
+  local css="${4}"
+
+cat << EOF > "${name}"
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html;charset=utf-8" >
+    <title>${title}</title>
+    $([[ -n "${css}" ]] && echo -e "<style>\n${css}\n</style>"|sed '2,$s\^\      \g')
+  </head>
+  <body>
+    $(echo -e ${body}| sed '2,$s\^\    \g')
+    <p style="font-style:'italic'; font-size:80%; float:right;">This page was generated on $(date "+${DATE}")
+      <a href="http://validator.w3.org/check?uri=referer">
+        <img src="${ICON_W3C}" alt="Valid HTML 5.0!" height="31" width="88" style="vertical-align:middle"/></a>
+    </p>
+  </body>
+</html>
+EOF
+
+}
+
+sample_div() {
+  local _content="$1"
+  local _font="$2"
+  local _html="<div class='sample' style=\"font-family:'${_font}'\">\n${!_content}\n</div>\n"
+  eval "${_content}"=\$_html
+}
+
+short_sample() {
+  local _content="$1"
+  local _font="$2"
+
+
+  local _html="  <h1 class='title'>${font}</h1>\n"
+  _html+="  <div style='float:right'>"
+  for size in 50 100 150 200 250 300 350 400; do _html+="<span style='font-size:${size}%'>Aa</span>"; done
+  _html+="</div>"
+  _html+="  <p>"
+  for c in {A..Z}; do _html+=$c; done
+  _html+="  </p>\n"
+  _html+="  <p>"
+  for c in {a..z}; do _html+=$c; done
+  _html+="  </p>\n"
+  _html+="  <p>"
+  for c in {1..9}; do _html+=$c; done
+  _html+="  </p>\n"
+  _html+="  <p style='font-size:200%'>${SYMBOLS}</p>\n"
+
+  eval "${_content}"+=\$_html
+}
+
+long_sample() {
+  local _lcontent="$1"
+  local _lfont="$2"
+
+  local _lhtml="  <a style='float:right' href='${ROOT}/index.html'><img height='30' width='30' src='${ICON_HOME}' alt='Home'></a>\n"
+  short_sample _lhtml "${font}"
+  _lhtml+='<hr>'
+  _lhtml+=$(cat "${SAMPLE}")
+
+  eval "${_lcontent}"+=\$_lhtml
+
+}
+
+write_sample()
+{
+  local output="$1"
+  local font="$2"
+  local css="$3"
+
+  local sample="${font}.html"
+
+  local html="  <a style='float:right' href='${ROOT}/${sample}'><img height='30' width='30' src='${ICON_RIGHT}' alt='${font}'></a>\n"
+  short_sample html "${font}"
+  sample_div html "${font}"
+
+  eval "${output}"+=\$html
+
+  html=''
+  long_sample html "${font}"
+  sample_div html "${font}"
+
+  write_file "${SITE}/${sample}" "${html}" "Fontex sample for ${font}" "${css}"
+
+
+}
+
+main "$@"
+
+
+# vim: set et ts=2 sw=2
